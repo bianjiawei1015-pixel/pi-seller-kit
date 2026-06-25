@@ -19,19 +19,34 @@ export interface Product {
 //   completed -> payment finished successfully
 //   cancelled -> buyer cancelled before completing
 //   failed    -> an error occurred during payment
-export type OrderStatus = "pending" | "completed" | "cancelled" | "failed";
+//   pending     -> order created, payment starting
+//   approved    -> server approved the payment with the Pi Platform API
+//   paid        -> server completed the payment (txid on chain)
+//   cancelled   -> buyer cancelled in the Pi wallet
+//   failed      -> an error occurred during payment
+//   incomplete  -> an unfinished payment was found and still needs resolving
+export type OrderStatus =
+  | "pending"
+  | "approved"
+  | "paid"
+  | "cancelled"
+  | "failed"
+  | "incomplete";
 
 export interface Order {
   orderId: string;
   productId: string;
   productName: string;
   amountPi: number;
+  // Public Pi identity of the buyer. uid is stable; username is for display.
+  buyerUid: string;
   buyerUsername: string;
+  // Pi payment references, filled in as the flow progresses.
+  paymentId?: string;
+  txid?: string;
   status: OrderStatus;
   createdAt: string; // ISO timestamp
-  // Reference to the Pi payment. In mock mode this is a fake id; with the real
-  // SDK it will be the paymentId returned by Pi.createPayment.
-  paymentId?: string;
+  updatedAt: string; // ISO timestamp, bumped on every status change
 }
 
 // Form payload used by /create. Same fields as Product minus the generated ones.

@@ -3,17 +3,21 @@ import { formatDate } from "@/lib/id";
 import { PiAmount } from "./PiAmount";
 
 const statusStyles: Record<OrderStatus, string> = {
-  completed: "bg-success/10 text-success",
+  paid: "bg-success/10 text-success",
+  approved: "bg-pi-50 text-pi-700",
   pending: "bg-pi-50 text-pi-700",
   cancelled: "bg-hairline text-muted",
   failed: "bg-danger/10 text-danger",
+  incomplete: "bg-danger/10 text-danger",
 };
 
 const statusLabel: Record<OrderStatus, string> = {
-  completed: "Completed",
+  paid: "Paid",
+  approved: "Approved",
   pending: "Pending",
   cancelled: "Cancelled",
   failed: "Failed",
+  incomplete: "Incomplete",
 };
 
 export function OrderCard({ order }: { order: Order }) {
@@ -43,6 +47,16 @@ export function OrderCard({ order }: { order: Order }) {
         </div>
         <PiAmount amount={order.amountPi} size="sm" />
       </div>
+
+      {/* Pi payment references (shown once they exist). */}
+      {order.paymentId || order.txid ? (
+        <div className="mt-3 space-y-1 border-t border-hairline pt-3 font-mono text-[11px] text-muted tnum">
+          {order.paymentId ? (
+            <p className="truncate">paymentId: {order.paymentId}</p>
+          ) : null}
+          {order.txid ? <p className="truncate">txid: {order.txid}</p> : null}
+        </div>
+      ) : null}
     </div>
   );
 }

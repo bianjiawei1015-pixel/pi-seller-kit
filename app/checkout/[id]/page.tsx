@@ -12,14 +12,12 @@ import {
   updateOrder,
   getPiUser,
 } from "@/lib/storage";
-import {
-  createPiPayment,
-  completePiPayment,
-  errorPiPayment,
-} from "@/lib/pi";
+import { isPiBrowser, startPiPayment } from "@/lib/pi";
 import type { Product } from "@/lib/types";
 
-type Phase = "idle" | "creating" | "completing" | "error";
+// idle -> processing (createPayment) -> approving (server approve)
+//      -> completing (server complete) -> success redirect, or error.
+type Phase = "idle" | "processing" | "approving" | "completing" | "error";
 
 export default function CheckoutPage() {
   const params = useParams<{ id: string }>();
@@ -34,40 +32,121 @@ export default function CheckoutPage() {
     if (typeof id === "string") setProduct(getProduct(id) ?? null);
   }, [id]);
 
-  // Mock payment lifecycle: create payment -> complete payment. Login is NOT
-  // triggered here so the mock checkout keeps working in any browser. If the
-  // buyer logged in with Pi on the home page we use that username, otherwise a
-  // mock buyer stands in.
-  async function handlePay() {
+  // Real Pi payment lifecycle. Pi.createPayment is callback-driven; the four
+  // callbacks talk to our server routes and move the order through its statuses.
+  function handlePay() {
     if (!product) return;
     setError(null);
 
-    try {
-      setPhase("creating");
-      const payment = await createPiPayment(product); // Pi.createPayment (mock)
+    // Must be inside Pi Browser to pay.
+    if (!isPiBrowser()) {
+      setError("Please open this app in Pi Browser to pay with Pi.");
+      return;
+    }
 
-      const buyer = getPiUser();
+    // Must be logged in (we need the buyer's uid/username + payments scope).
+    const buyer = getPiUser();
+    if (!buyer) {
+      setError("Please login with Pi before payment.");
+      return;
+    }
 
-      // Record the order as pending the moment the payment exists.
-      const order = createOrder({
+    setPhase("processing");
+
+    // Record the order as pending up front so its id can go in the metadata.
+    const order = createOrder({
+      productId: product.id,
+      productName: product.productName,
+      amountPi: product.pricePi,
+      buyerUid: buyer.uid,
+      buyerUsername: buyer.username,
+    });
+
+    const paymentData = {
+      amount: Number(product.pricePi),
+      memo: "Payment for " + product.productName,
+      metadata: {
         productId: product.id,
-        productName: product.productName,
-        amountPi: product.pricePi,
-        buyerUsername: buyer?.username ?? "pioneer_demo",
-        paymentId: payment.paymentId,
+        orderId: order.orderId,
+        buyerUid: buyer.uid,
+        buyerUsername: buyer.username,
+      },
+    };
+
+    try {
+      startPiPayment(paymentData, {
+        // 1) Server-side approve.
+        onReadyForServerApproval: async (paymentId) => {
+          updateOrder(order.orderId, { paymentId });
+          setPhase("approving");
+          try {
+            const res = await fetch("/api/pi/approve", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ paymentId, orderId: order.orderId }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.ok) {
+              updateOrder(order.orderId, { status: "approved" });
+            } else {
+              updateOrder(order.orderId, { status: "failed" });
+              setError(data?.message || "Approval failed.");
+              setPhase("error");
+            }
+          } catch {
+            updateOrder(order.orderId, { status: "failed" });
+            setError("Approval request failed.");
+            setPhase("error");
+          }
+        },
+
+        // 2) Server-side complete, then go to success.
+        onReadyForServerCompletion: async (paymentId, txid) => {
+          updateOrder(order.orderId, { txid });
+          setPhase("completing");
+          try {
+            const res = await fetch("/api/pi/complete", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ paymentId, txid, orderId: order.orderId }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.ok) {
+              updateOrder(order.orderId, { status: "paid" });
+              router.push(
+                `/success?orderId=${encodeURIComponent(order.orderId)}`,
+              );
+            } else {
+              updateOrder(order.orderId, { status: "failed" });
+              setError(data?.message || "Completion failed.");
+              setPhase("error");
+            }
+          } catch {
+            updateOrder(order.orderId, { status: "failed" });
+            setError("Completion request failed.");
+            setPhase("error");
+          }
+        },
+
+        // 3) Buyer cancelled in the Pi wallet.
+        onCancel: (paymentId) => {
+          updateOrder(order.orderId, { status: "cancelled", paymentId });
+          setError("Payment cancelled.");
+          setPhase("error");
+        },
+
+        // 4) Any SDK / payment error.
+        onError: (err) => {
+          // eslint-disable-next-line no-console
+          console.error("[pi] payment error:", err);
+          updateOrder(order.orderId, { status: "failed" });
+          setError("Payment failed.");
+          setPhase("error");
+        },
       });
-
-      setPhase("completing");
-      const ok = await completePiPayment(payment.paymentId); // server-side complete (mock)
-
-      updateOrder(order.orderId, { status: ok ? "completed" : "failed" });
-
-      if (!ok) throw new Error("Payment could not be completed.");
-
-      router.push(`/success?orderId=${encodeURIComponent(order.orderId)}`);
     } catch (err) {
-      const { message } = errorPiPayment(err);
-      setError(message);
+      updateOrder(order.orderId, { status: "failed" });
+      setError(err instanceof Error ? err.message : "Payment failed.");
       setPhase("error");
     }
   }
@@ -98,13 +177,15 @@ export default function CheckoutPage() {
     );
   }
 
-  const working = phase === "creating" || phase === "completing";
+  const working =
+    phase === "processing" || phase === "approving" || phase === "completing";
 
   const phaseLabel: Record<Phase, string> = {
-    idle: "Mock Pay with Pi",
-    creating: "Creating payment…",
+    idle: "Pay with Pi",
+    processing: "Processing Pi payment…",
+    approving: "Approving payment…",
     completing: "Completing payment…",
-    error: "Try again",
+    error: "Pay with Pi",
   };
 
   return (
@@ -132,11 +213,11 @@ export default function CheckoutPage() {
           </div>
         </div>
 
-        {/* Mock-mode notice */}
+        {/* Testnet notice */}
         <div className="mt-4 rounded-2xl bg-pi-50 px-4 py-3 text-[13px] leading-relaxed text-pi-700">
-          Demo mode: this simulates the Pi payment flow and records an order. No
-          real Pi is transferred. Login and payment will run through the Pi SDK
-          once connected.
+          You will confirm this payment in your Pi Wallet. Approval and
+          completion are handled securely on our server. You will never be asked
+          for a wallet passphrase or private key.
         </div>
 
         {error ? (

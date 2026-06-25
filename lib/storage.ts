@@ -106,18 +106,20 @@ export function createOrder(input: {
   productId: string;
   productName: string;
   amountPi: number;
+  buyerUid: string;
   buyerUsername: string;
-  paymentId?: string;
 }): Order {
   const orders = read<Order[]>(ORDERS_KEY, []);
   // Guarantee a unique orderId so two orders can never share a reference.
   let orderId = newOrderId();
   while (orders.some((o) => o.orderId === orderId)) orderId = newOrderId();
 
+  const now = new Date().toISOString();
   const order: Order = {
     orderId,
     status: "pending",
-    createdAt: new Date().toISOString(),
+    createdAt: now,
+    updatedAt: now,
     ...input,
   };
   orders.push(order);
@@ -125,15 +127,16 @@ export function createOrder(input: {
   return order;
 }
 
-// Update an existing order (e.g. mark completed / cancelled / failed).
+// Update an existing order (status / paymentId / txid …). Always bumps
+// updatedAt so the orders list reflects the latest change.
 export function updateOrder(
   orderId: string,
-  patch: Partial<Pick<Order, "status" | "paymentId" | "buyerUsername">>,
+  patch: Partial<Pick<Order, "status" | "paymentId" | "txid" | "buyerUsername">>,
 ): Order | undefined {
   const orders = read<Order[]>(ORDERS_KEY, []);
   const idx = orders.findIndex((o) => o.orderId === orderId);
   if (idx === -1) return undefined;
-  orders[idx] = { ...orders[idx], ...patch };
+  orders[idx] = { ...orders[idx], ...patch, updatedAt: new Date().toISOString() };
   write(ORDERS_KEY, orders);
   return orders[idx];
 }
