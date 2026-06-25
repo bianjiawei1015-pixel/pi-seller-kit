@@ -40,10 +40,11 @@ import type { Product } from "./types";
 const MOCK_PAYMENTS = true;
 
 // Pi.init sandbox flag. One-line toggle:
-//   true  -> opening the app through the Pi sandbox / Testnet tool
-//   false -> opening the real app URL directly in Pi Browser (Mainnet)
-// If the debug panel shows an init/auth error, flip this and redeploy.
-const PI_SANDBOX = true;
+//   false -> opening the real app URL directly in Pi Browser (this is our case;
+//            sandbox:true here makes init silently fail -> "SDK was not
+//            initialized" on authenticate)
+//   true  -> ONLY when launching the app through the Pi sandbox / Testnet tool
+const PI_SANDBOX = false;
 
 // How long we wait for the whole authenticate flow before giving up. Generous
 // (12s) so the user has time to tap "Approve" on the Pi consent screen, but
@@ -192,14 +193,15 @@ export async function loginWithPi(): Promise<PiLoginUser> {
   }
   const Pi = window.Pi;
 
-  // Initialise inside try/catch.
+  // Initialise inside try/catch. We re-init on EVERY attempt (Pi.init is
+  // idempotent) so a previous failed init can never leave the SDK in a
+  // "not initialized" state on retry. Production passes { version: "2.0" }
+  // with no sandbox key; only the sandbox tool sets sandbox: true.
   try {
-    if (!initialised) {
-      Pi.init({ version: "2.0", sandbox: PI_SANDBOX });
-      initialised = true;
-      // eslint-disable-next-line no-console
-      console.info(`[pi] SDK initialised (sandbox=${PI_SANDBOX})`);
-    }
+    Pi.init(PI_SANDBOX ? { version: "2.0", sandbox: true } : { version: "2.0" });
+    initialised = true;
+    // eslint-disable-next-line no-console
+    console.info(`[pi] SDK initialised (sandbox=${PI_SANDBOX})`);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("[pi] Pi.init failed:", err);
