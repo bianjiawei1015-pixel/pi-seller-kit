@@ -6,8 +6,8 @@
 // instead of touching `window.Pi` directly, so going from mock -> real SDK is a
 // change to this single file.
 //
-// CURRENT MODE: LOGIN is REAL (Pi.authenticate). Sandbox is auto-detected from
-// the host — production runs Pi.init without forcing sandbox.
+// CURRENT MODE: LOGIN is REAL (Pi.authenticate). Production runs Pi.init with
+// no sandbox flag (PI_SANDBOX = false); init is awaited before authenticate.
 // PAYMENTS are still MOCK — createPayment/completePayment simulate the Pi
 // payment lifecycle with timeouts so the order flow stays testable in any
 // browser. No real Pi is ever transferred.
@@ -75,7 +75,9 @@ export interface PiPaymentResult {
 declare global {
   interface Window {
     Pi?: {
-      init: (config: { version: string; sandbox?: boolean }) => void;
+      // Different SDK builds return either void (sync) or a Promise (async),
+      // so we treat the result as possibly thenable and await it.
+      init: (config: { version: string; sandbox?: boolean }) => void | Promise<void>;
       authenticate: (
         scopes: string[],
         onIncompletePaymentFound: (payment: unknown) => void,
@@ -197,8 +199,20 @@ export async function loginWithPi(): Promise<PiLoginUser> {
   // idempotent) so a previous failed init can never leave the SDK in a
   // "not initialized" state on retry. Production passes { version: "2.0" }
   // with no sandbox key; only the sandbox tool sets sandbox: true.
+  //
+  // CRITICAL: Pi.init may be async in some SDK builds. If we don't wait for it
+  // to finish, the very next authenticate() throws "SDK was not initialized".
+  // So we await the result whenever it's thenable.
   try {
-    Pi.init(PI_SANDBOX ? { version: "2.0", sandbox: true } : { version: "2.0" });
+    const initResult = Pi.init(
+      PI_SANDBOX ? { version: "2.0", sandbox: true } : { version: "2.0" },
+    ) as unknown;
+    if (
+      initResult &&
+      typeof (initResult as { then?: unknown }).then === "function"
+    ) {
+      await (initResult as Promise<unknown>);
+    }
     initialised = true;
     // eslint-disable-next-line no-console
     console.info(`[pi] SDK initialised (sandbox=${PI_SANDBOX})`);
