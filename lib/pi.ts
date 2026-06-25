@@ -6,7 +6,8 @@
 // instead of touching `window.Pi` directly, so going from mock -> real SDK is a
 // change to this single file.
 //
-// CURRENT MODE: LOGIN is REAL (Pi.authenticate on the Testnet/sandbox).
+// CURRENT MODE: LOGIN is REAL (Pi.authenticate). Sandbox is auto-detected from
+// the host — production runs Pi.init without forcing sandbox.
 // PAYMENTS are still MOCK — createPayment/completePayment simulate the Pi
 // payment lifecycle with timeouts so the order flow stays testable in any
 // browser. No real Pi is ever transferred.
@@ -33,11 +34,20 @@
 
 import type { Product } from "./types";
 
-// Login is now REAL (Pi.authenticate on the Testnet). Payments stay mocked for
-// now so no real Pi can move — flip MOCK_PAYMENTS to false only when the
-// server-side approve/complete endpoints are ready.
-const SANDBOX = true; // Pi Testnet / sandbox
+// Login is now REAL (Pi.authenticate). Payments stay mocked for now so no real
+// Pi can move — flip MOCK_PAYMENTS to false only when the server-side
+// approve/complete endpoints are ready.
 const MOCK_PAYMENTS = true;
+
+// Sandbox is enabled ONLY when the app is actually served from the Pi sandbox
+// host. On the production Vercel URL we must NOT force sandbox, otherwise
+// Pi.authenticate rejects. Opened normally in Pi Browser => real init.
+function isPiSandbox(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    window.location.hostname.includes("sandbox.minepi.com")
+  );
+}
 
 // Minimal shape of the things we use from the Pi SDK. Kept here so the rest of
 // the app has types even before the real SDK is installed.
@@ -100,14 +110,7 @@ export function isPiBrowser(): boolean {
 
 // User-facing login messages.
 export const NOT_PI_BROWSER_MESSAGE = "Please open this app in Pi Browser.";
-export const LOGIN_FAILED_MESSAGE = "Login failed or cancelled.";
-export const LOGIN_TIMEOUT_MESSAGE =
-  "Pi connection timed out. Please open this app in Pi Browser and try again.";
-
-// How long we wait for Pi.authenticate before giving up. The SDK script defines
-// window.Pi in EVERY browser, but authenticate only ever resolves inside the Pi
-// Browser — elsewhere it hangs forever, so this timeout is what unsticks the UI.
-const LOGIN_TIMEOUT_MS = 8000;
+export const LOGIN_FAILED_MESSAGE = "Login failed. Please try again in Pi Browser.";
 
 /* ------------------------------------------------------------------ */
 /*  initPiSDK                                                          */
@@ -123,10 +126,12 @@ export function initPiSDK(): void {
     console.info("[pi] Pi SDK not found — open in Pi Browser to log in.");
     return;
   }
-  window.Pi!.init({ version: "2.0", sandbox: SANDBOX });
+  const sandbox = isPiSandbox();
+  // Production (default): { version: "2.0" }. Sandbox host: add sandbox: true.
+  window.Pi!.init(sandbox ? { version: "2.0", sandbox: true } : { version: "2.0" });
   initialised = true;
   // eslint-disable-next-line no-console
-  console.info(`[pi] SDK initialised (sandbox=${SANDBOX})`);
+  console.info(`[pi] SDK initialised (sandbox=${sandbox})`);
 }
 
 /* ------------------------------------------------------------------ */
@@ -142,53 +147,50 @@ function onIncompletePaymentFound(payment: unknown): void {
 /* ------------------------------------------------------------------ */
 /*  loginWithPi                                                        */
 /* ------------------------------------------------------------------ */
-// REAL Pi login on the Testnet. Returns the authenticated user; the caller
-// keeps only the public username + uid (never the accessToken).
+// REAL Pi login. Returns the authenticated user; the caller keeps only the
+// public username + uid (never the accessToken).
 //
 // Throws an Error whose message is already user-facing, so the UI can show it
-// directly. Three distinct outcomes:
-//   - window.Pi missing  -> NOT_PI_BROWSER_MESSAGE (immediate)
-//   - init/auth rejects  -> LOGIN_FAILED_MESSAGE
-//   - auth never settles -> LOGIN_TIMEOUT_MESSAGE (after 8s)
+// directly. Two outcomes:
+//   - window.Pi missing -> NOT_PI_BROWSER_MESSAGE (immediate, no timeout)
+//   - init/auth rejects -> LOGIN_FAILED_MESSAGE
+//
+// There is intentionally NO timeout on Pi.authenticate: approving consent can
+// take the user a while, and an artificial timeout would abort a valid login.
 export async function loginWithPi(): Promise<PiUser> {
-  // 1 + 2. The SDK must be present. If not, fail immediately.
+  // 1 + 2. The SDK must be present. If not (e.g. normal Chrome), fail at once.
   if (typeof window === "undefined" || !window.Pi) {
     throw new Error(NOT_PI_BROWSER_MESSAGE);
   }
   const Pi = window.Pi;
 
-  // 3 + 4. Initialise the SDK inside try/catch.
+  // 3. Initialise. Production uses { version: "2.0" }; only the Pi sandbox host
+  //    gets sandbox: true. Wrapped in try/catch.
   try {
     if (!initialised) {
-      Pi.init({ version: "2.0", sandbox: SANDBOX });
+      const sandbox = isPiSandbox();
+      Pi.init(sandbox ? { version: "2.0", sandbox: true } : { version: "2.0" });
       initialised = true;
+      // eslint-disable-next-line no-console
+      console.info(`[pi] SDK initialised (sandbox=${sandbox})`);
     }
-  } catch {
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("[pi] Pi.init failed:", err);
     throw new Error(LOGIN_FAILED_MESSAGE);
   }
 
-  // 4. Authenticate inside try/catch. Only the "username" scope is requested.
-  const authenticate = (async (): Promise<PiUser> => {
-    try {
-      const auth = await Pi.authenticate(["username"], onIncompletePaymentFound);
-      // NOTE: auth.accessToken is intentionally discarded and never stored.
-      return auth.user;
-    } catch {
-      // Rejection here covers both errors and the user cancelling consent.
-      throw new Error(LOGIN_FAILED_MESSAGE);
-    }
-  })();
-
-  // 7. 8-second timeout so the button can never stay stuck on "Connecting…".
-  let timer: ReturnType<typeof setTimeout>;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(LOGIN_TIMEOUT_MESSAGE)), LOGIN_TIMEOUT_MS);
-  });
-
+  // 4 + 7. Authenticate inside try/catch, with no timeout. Only the "username"
+  //        scope is requested.
   try {
-    return await Promise.race([authenticate, timeout]);
-  } finally {
-    clearTimeout(timer!);
+    const auth = await Pi.authenticate(["username"], onIncompletePaymentFound);
+    // NOTE: auth.accessToken is intentionally discarded and never stored.
+    return auth.user;
+  } catch (err) {
+    // Log the real error for debugging; show a friendly message to the user.
+    // eslint-disable-next-line no-console
+    console.error("[pi] Pi.authenticate failed:", err);
+    throw new Error(LOGIN_FAILED_MESSAGE);
   }
 }
 
