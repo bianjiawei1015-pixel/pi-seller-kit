@@ -6,8 +6,9 @@
 // instead of touching `window.Pi` directly, so going from mock -> real SDK is a
 // change to this single file.
 //
-// CURRENT MODE: LOGIN is REAL (Pi.authenticate). Production runs Pi.init with
-// no sandbox flag (PI_SANDBOX = false); init is awaited before authenticate.
+// CURRENT MODE: LOGIN is REAL (Pi.authenticate). Sandbox is auto-detected
+// (see isSandboxMode): false in Pi Browser, true when wrapped by the Pi sandbox
+// tool. Pi.init is awaited before authenticate.
 // PAYMENTS are still MOCK — createPayment/completePayment simulate the Pi
 // payment lifecycle with timeouts so the order flow stays testable in any
 // browser. No real Pi is ever transferred.
@@ -39,12 +40,33 @@ import type { Product } from "./types";
 // approve/complete endpoints are ready.
 const MOCK_PAYMENTS = true;
 
-// Pi.init sandbox flag. One-line toggle:
-//   false -> opening the real app URL directly in Pi Browser (this is our case;
-//            sandbox:true here makes init silently fail -> "SDK was not
-//            initialized" on authenticate)
-//   true  -> ONLY when launching the app through the Pi sandbox / Testnet tool
-const PI_SANDBOX = false;
+// Pi.init sandbox flag — auto-detected, so we never have to flip it by hand:
+//   - Opened normally in Pi Browser (our production case) -> false, so
+//     authenticate works. (sandbox:true here would make init fail with
+//     "SDK was not initialized".)
+//   - Loaded by the Pi sandbox tool (sandbox.minepi.com wraps our app in an
+//     iframe for the dev-portal "Run in Sandbox" step) -> true.
+//   - Manual override for testing: add ?sandbox=true to the URL.
+function isSandboxMode(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("sandbox") === "true") return true;
+
+    // When sandbox.minepi.com embeds our app, OUR hostname stays the same, so
+    // we detect the sandbox parent instead.
+    const ancestors = window.location.ancestorOrigins;
+    if (ancestors) {
+      for (let i = 0; i < ancestors.length; i++) {
+        if (ancestors[i].includes("sandbox.minepi.com")) return true;
+      }
+    }
+    if (document.referrer.includes("sandbox.minepi.com")) return true;
+  } catch {
+    // Any access error -> treat as production (not sandbox).
+  }
+  return false;
+}
 
 // How long we wait for the whole authenticate flow before giving up. Generous
 // (12s) so the user has time to tap "Approve" on the Pi consent screen, but
@@ -153,10 +175,11 @@ export function initPiSDK(): void {
     console.info("[pi] Pi SDK not found — open in Pi Browser to log in.");
     return;
   }
-  window.Pi!.init({ version: "2.0", sandbox: PI_SANDBOX });
+  const sandbox = isSandboxMode();
+  window.Pi!.init(sandbox ? { version: "2.0", sandbox: true } : { version: "2.0" });
   initialised = true;
   // eslint-disable-next-line no-console
-  console.info(`[pi] SDK initialised (sandbox=${PI_SANDBOX})`);
+  console.info(`[pi] SDK initialised (sandbox=${sandbox})`);
 }
 
 /* ------------------------------------------------------------------ */
@@ -197,15 +220,15 @@ export async function loginWithPi(): Promise<PiLoginUser> {
 
   // Initialise inside try/catch. We re-init on EVERY attempt (Pi.init is
   // idempotent) so a previous failed init can never leave the SDK in a
-  // "not initialized" state on retry. Production passes { version: "2.0" }
-  // with no sandbox key; only the sandbox tool sets sandbox: true.
+  // "not initialized" state on retry.
   //
   // CRITICAL: Pi.init may be async in some SDK builds. If we don't wait for it
   // to finish, the very next authenticate() throws "SDK was not initialized".
   // So we await the result whenever it's thenable.
   try {
+    const sandbox = isSandboxMode();
     const initResult = Pi.init(
-      PI_SANDBOX ? { version: "2.0", sandbox: true } : { version: "2.0" },
+      sandbox ? { version: "2.0", sandbox: true } : { version: "2.0" },
     ) as unknown;
     if (
       initResult &&
@@ -215,7 +238,7 @@ export async function loginWithPi(): Promise<PiLoginUser> {
     }
     initialised = true;
     // eslint-disable-next-line no-console
-    console.info(`[pi] SDK initialised (sandbox=${PI_SANDBOX})`);
+    console.info(`[pi] SDK initialised (sandbox=${sandbox})`);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("[pi] Pi.init failed:", err);
