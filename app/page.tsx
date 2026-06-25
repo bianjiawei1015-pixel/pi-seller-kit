@@ -1,21 +1,56 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ButtonLink } from "@/components/Button";
+import { Button, ButtonLink } from "@/components/Button";
 import { ProductCard } from "@/components/ProductCard";
-import { initPiSDK } from "@/lib/pi";
-import { getProducts } from "@/lib/storage";
-import type { Product } from "@/lib/types";
+import { loginWithPi } from "@/lib/pi";
+import {
+  getProducts,
+  getPiUser,
+  savePiUser,
+  clearPiUser,
+} from "@/lib/storage";
+import type { PiSessionUser, Product } from "@/lib/types";
 
 export default function HomePage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [ready, setReady] = useState(false);
+  const [piUser, setPiUser] = useState<PiSessionUser | null>(null);
+  const [loggingIn, setLoggingIn] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
 
   useEffect(() => {
-    initPiSDK();
+    // Read-only on mount: load products + any saved Pi session. The SDK is NOT
+    // touched here, so a normal browser never auto-enters a "Connecting…" state
+    // — that only happens after the user taps Login with Pi.
     setProducts(getProducts());
+    setPiUser(getPiUser());
     setReady(true);
   }, []);
+
+  async function handleLogin() {
+    setLoginError(null);
+    setLoggingIn(true);
+    try {
+      const user = await loginWithPi();
+      const session: PiSessionUser = { uid: user.uid, username: user.username };
+      savePiUser(session);
+      setPiUser(session);
+    } catch (err) {
+      setLoginError(
+        err instanceof Error ? err.message : "Could not log in with Pi.",
+      );
+    } finally {
+      setLoggingIn(false);
+    }
+  }
+
+  // Mock logout: only clears the locally stored Pi user info.
+  function handleLogout() {
+    clearPiUser();
+    setPiUser(null);
+    setLoginError(null);
+  }
 
   return (
     <>
@@ -37,6 +72,40 @@ export default function HomePage() {
           <p className="mt-3 max-w-[30ch] text-[17px] leading-relaxed text-muted">
             Create and sell with Pi in minutes.
           </p>
+
+          {/* Pi login */}
+          <div className="mt-6">
+            {!ready ? (
+              <div className="h-14 animate-pulse rounded-pill bg-hairline/60" />
+            ) : piUser ? (
+              <div className="flex items-center justify-between gap-3 rounded-card bg-surface p-4 shadow-card ring-1 ring-hairline/60">
+                <div className="min-w-0">
+                  <p className="text-[12px] font-medium uppercase tracking-wide text-muted">
+                    Logged in as
+                  </p>
+                  <p className="truncate font-mono text-[16px] font-semibold tracking-tight text-ink tnum">
+                    @{piUser.username}
+                  </p>
+                </div>
+                <button
+                  onClick={handleLogout}
+                  className="shrink-0 rounded-pill px-4 py-2 text-[14px] font-semibold text-pi-600 transition active:bg-pi-50"
+                >
+                  Log out
+                </button>
+              </div>
+            ) : (
+              <Button onClick={handleLogin} disabled={loggingIn}>
+                {loggingIn ? "Connecting to Pi…" : "Login with Pi"}
+              </Button>
+            )}
+
+            {loginError ? (
+              <p className="mt-3 rounded-2xl bg-danger/10 px-4 py-3 text-[14px] text-danger">
+                {loginError}
+              </p>
+            ) : null}
+          </div>
         </section>
 
         {/* Recent products */}

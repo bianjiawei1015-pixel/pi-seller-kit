@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import Script from "next/script";
 import "./globals.css";
 import { AppShell } from "@/components/AppShell";
 
@@ -24,13 +25,19 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      {/*
-        TO ENABLE THE REAL PI SDK LATER, add this above </head> equivalent:
-        import Script from "next/script";
-        <Script src="https://sdk.minepi.com/pi-sdk.js" strategy="beforeInteractive" />
-        Then flip MOCK_MODE in lib/pi.ts to false.
-      */}
       <body>
+        {/*
+          Pi SDK. Loaded with afterInteractive so a slow or unreachable CDN can
+          never block rendering or white-screen the page — the UI is usable
+          immediately and the script finishes loading well before a user can tap
+          Login with Pi. Login (init + authenticate) runs only on that click and
+          is guarded by an 8s timeout in lib/pi.ts, so the button can never stay
+          stuck on "Connecting…".
+        */}
+        <Script
+          src="https://sdk.minepi.com/pi-sdk.js"
+          strategy="afterInteractive"
+        />
         <AppShell>{children}</AppShell>
       </body>
     </html>

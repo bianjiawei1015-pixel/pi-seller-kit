@@ -6,9 +6,10 @@
 // instead of touching `window.Pi` directly, so going from mock -> real SDK is a
 // change to this single file.
 //
-// CURRENT MODE: MOCK. No real Pi SDK is loaded or called. The functions below
-// simulate the Pi payment lifecycle with timeouts and fake data so the whole
-// flow (login -> create payment -> complete) is testable in a normal browser.
+// CURRENT MODE: LOGIN is REAL (Pi.authenticate on the Testnet/sandbox).
+// PAYMENTS are still MOCK — createPayment/completePayment simulate the Pi
+// payment lifecycle with timeouts so the order flow stays testable in any
+// browser. No real Pi is ever transferred.
 //
 // -----------------------------------------------------------------------------
 // SECURITY (do not weaken):
@@ -21,9 +22,8 @@
 // -----------------------------------------------------------------------------
 //
 // HOW TO GO LIVE (later):
-//   1. Load the SDK in app/layout.tsx:
-//        <Script src="https://sdk.minepi.com/pi-sdk.js" strategy="beforeInteractive" />
-//   2. Set MOCK_MODE = false below.
+//   1. The SDK is already loaded in app/layout.tsx via next/script.
+//   2. Set MOCK_PAYMENTS = false below.
 //   3. Replace the bodies marked `// REAL:` with the real `window.Pi` calls.
 //   4. Implement the two server endpoints Pi requires:
 //        POST /api/pi/approve   -> calls Pi Platform API /payments/{id}/approve
@@ -33,7 +33,11 @@
 
 import type { Product } from "./types";
 
-const MOCK_MODE = true;
+// Login is now REAL (Pi.authenticate on the Testnet). Payments stay mocked for
+// now so no real Pi can move — flip MOCK_PAYMENTS to false only when the
+// server-side approve/complete endpoints are ready.
+const SANDBOX = true; // Pi Testnet / sandbox
+const MOCK_PAYMENTS = true;
 
 // Minimal shape of the things we use from the Pi SDK. Kept here so the rest of
 // the app has types even before the real SDK is installed.
@@ -85,42 +89,107 @@ function mockUser(): PiUser {
 }
 
 /* ------------------------------------------------------------------ */
+/*  isPiBrowser                                                        */
+/* ------------------------------------------------------------------ */
+// window.Pi is injected only by the Pi Browser (after the SDK script loads).
+// Used by the UI to show "Please open this app in Pi Browser." in any other
+// browser instead of letting login fail silently.
+export function isPiBrowser(): boolean {
+  return typeof window !== "undefined" && typeof window.Pi !== "undefined";
+}
+
+// User-facing login messages.
+export const NOT_PI_BROWSER_MESSAGE = "Please open this app in Pi Browser.";
+export const LOGIN_FAILED_MESSAGE = "Login failed or cancelled.";
+export const LOGIN_TIMEOUT_MESSAGE =
+  "Pi connection timed out. Please open this app in Pi Browser and try again.";
+
+// How long we wait for Pi.authenticate before giving up. The SDK script defines
+// window.Pi in EVERY browser, but authenticate only ever resolves inside the Pi
+// Browser — elsewhere it hangs forever, so this timeout is what unsticks the UI.
+const LOGIN_TIMEOUT_MS = 8000;
+
+/* ------------------------------------------------------------------ */
 /*  initPiSDK                                                          */
 /* ------------------------------------------------------------------ */
 let initialised = false;
 
 export function initPiSDK(): void {
   if (initialised) return;
-  initialised = true;
-
-  if (MOCK_MODE) {
-    // Nothing to load in mock mode.
+  // The SDK only exists inside the Pi Browser. In a normal browser we simply
+  // do nothing — the app must not crash, just prompt to open in Pi Browser.
+  if (!isPiBrowser()) {
     // eslint-disable-next-line no-console
-    console.info("[pi] mock SDK ready");
+    console.info("[pi] Pi SDK not found — open in Pi Browser to log in.");
     return;
   }
+  window.Pi!.init({ version: "2.0", sandbox: SANDBOX });
+  initialised = true;
+  // eslint-disable-next-line no-console
+  console.info(`[pi] SDK initialised (sandbox=${SANDBOX})`);
+}
 
-  // REAL:
-  // if (typeof window !== "undefined" && window.Pi) {
-  //   window.Pi.init({ version: "2.0", sandbox: true });
-  // }
+/* ------------------------------------------------------------------ */
+/*  onIncompletePaymentFound                                          */
+/* ------------------------------------------------------------------ */
+// Required by Pi.authenticate. With payments still mocked there's nothing to
+// resume, so we just log it for now.
+function onIncompletePaymentFound(payment: unknown): void {
+  // eslint-disable-next-line no-console
+  console.info("[pi] incomplete payment found:", payment);
 }
 
 /* ------------------------------------------------------------------ */
 /*  loginWithPi                                                        */
 /* ------------------------------------------------------------------ */
-// Returns the authenticated Pi user. We only keep the public username.
+// REAL Pi login on the Testnet. Returns the authenticated user; the caller
+// keeps only the public username + uid (never the accessToken).
+//
+// Throws an Error whose message is already user-facing, so the UI can show it
+// directly. Three distinct outcomes:
+//   - window.Pi missing  -> NOT_PI_BROWSER_MESSAGE (immediate)
+//   - init/auth rejects  -> LOGIN_FAILED_MESSAGE
+//   - auth never settles -> LOGIN_TIMEOUT_MESSAGE (after 8s)
 export async function loginWithPi(): Promise<PiUser> {
-  if (MOCK_MODE) {
-    await wait(400);
-    return mockUser();
+  // 1 + 2. The SDK must be present. If not, fail immediately.
+  if (typeof window === "undefined" || !window.Pi) {
+    throw new Error(NOT_PI_BROWSER_MESSAGE);
+  }
+  const Pi = window.Pi;
+
+  // 3 + 4. Initialise the SDK inside try/catch.
+  try {
+    if (!initialised) {
+      Pi.init({ version: "2.0", sandbox: SANDBOX });
+      initialised = true;
+    }
+  } catch {
+    throw new Error(LOGIN_FAILED_MESSAGE);
   }
 
-  // REAL:
-  // const scopes = ["username", "payments"];
-  // const auth = await window.Pi!.authenticate(scopes, onIncompletePaymentFound);
-  // return auth.user;
-  throw new Error("Real Pi SDK not enabled");
+  // 4. Authenticate inside try/catch. Only the "username" scope is requested.
+  const authenticate = (async (): Promise<PiUser> => {
+    try {
+      const auth = await Pi.authenticate(["username"], onIncompletePaymentFound);
+      // NOTE: auth.accessToken is intentionally discarded and never stored.
+      return auth.user;
+    } catch {
+      // Rejection here covers both errors and the user cancelling consent.
+      throw new Error(LOGIN_FAILED_MESSAGE);
+    }
+  })();
+
+  // 7. 8-second timeout so the button can never stay stuck on "Connecting…".
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(LOGIN_TIMEOUT_MESSAGE)), LOGIN_TIMEOUT_MS);
+  });
+
+  try {
+    return await Promise.race([authenticate, timeout]);
+  } finally {
+    clearTimeout(timer!);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -131,7 +200,7 @@ export async function loginWithPi(): Promise<PiUser> {
 // (onReadyForServerApproval / onReadyForServerCompletion), so this returns once
 // the payment object exists.
 export async function createPiPayment(product: Product): Promise<PiPaymentResult> {
-  if (MOCK_MODE) {
+  if (MOCK_PAYMENTS) {
     await wait(600);
     // eslint-disable-next-line no-console
     console.info(`[pi] mock createPayment: ${product.pricePi}π for "${product.productName}"`);
@@ -173,7 +242,7 @@ export async function createPiPayment(product: Product): Promise<PiPaymentResult
 // the real SDK, the *server* completes the payment via the Pi Platform API;
 // this client helper would call that endpoint.
 export async function completePiPayment(paymentId: string): Promise<boolean> {
-  if (MOCK_MODE) {
+  if (MOCK_PAYMENTS) {
     await wait(500);
     // eslint-disable-next-line no-console
     console.info(`[pi] mock completePayment: ${paymentId}`);
@@ -194,7 +263,7 @@ export async function completePiPayment(paymentId: string): Promise<boolean> {
 /*  cancelPiPayment                                                    */
 /* ------------------------------------------------------------------ */
 export async function cancelPiPayment(paymentId: string): Promise<void> {
-  if (MOCK_MODE) {
+  if (MOCK_PAYMENTS) {
     await wait(200);
     // eslint-disable-next-line no-console
     console.info("[pi] mock payment cancelled:", paymentId);

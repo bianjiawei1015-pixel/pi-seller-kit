@@ -5,13 +5,16 @@
 // goes through this module, which means swapping to Supabase later only touches
 // this one file — the pages and components never read localStorage directly.
 
-import type { Order, Product, ProductDraft } from "./types";
+import type { Order, PiSessionUser, Product, ProductDraft } from "./types";
 import { newOrderId, shortId } from "./id";
 import { seedProducts } from "./seed";
 
 const PRODUCTS_KEY = "psk:products";
 const ORDERS_KEY = "psk:orders";
 const SEEDED_KEY = "psk:seeded";
+// Only the public username + uid live here. The Pi accessToken is intentionally
+// never persisted.
+const PI_USER_KEY = "psk:piUser";
 
 // localStorage only exists in the browser. Guard every access so this module is
 // safe to import from server components too.
@@ -133,4 +136,30 @@ export function updateOrder(
   orders[idx] = { ...orders[idx], ...patch };
   write(ORDERS_KEY, orders);
   return orders[idx];
+}
+
+/* ----------------------------- Pi session ---------------------------- */
+// Persists only the public username + uid so the login survives a refresh.
+// The accessToken returned by Pi.authenticate is deliberately NOT stored.
+
+export function getPiUser(): PiSessionUser | null {
+  const user = read<PiSessionUser | null>(PI_USER_KEY, null);
+  // Reject anything that isn't a well-formed session object.
+  if (user && typeof user.uid === "string" && typeof user.username === "string") {
+    return user;
+  }
+  return null;
+}
+
+export function savePiUser(user: PiSessionUser): void {
+  write(PI_USER_KEY, { uid: user.uid, username: user.username });
+}
+
+export function clearPiUser(): void {
+  if (!isBrowser()) return;
+  try {
+    window.localStorage.removeItem(PI_USER_KEY);
+  } catch {
+    // Ignore storage errors (private mode, etc).
+  }
 }

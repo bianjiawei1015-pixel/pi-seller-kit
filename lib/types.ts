@@ -36,3 +36,10 @@ export interface Order {
 
 // Form payload used by /create. Same fields as Product minus the generated ones.
 export type ProductDraft = Omit<Product, "id" | "createdAt">;
+
+// Public Pi account info kept after login so the username survives a refresh.
+// NEVER contains an accessToken, private key, or any wallet secret.
+export interface PiSessionUser {
+  uid: string;
+  username: string;
+}

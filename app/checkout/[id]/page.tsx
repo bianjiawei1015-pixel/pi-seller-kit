@@ -6,16 +6,20 @@ import { PageHeader } from "@/components/PageHeader";
 import { Button, ButtonLink } from "@/components/Button";
 import { PiAmount } from "@/components/PiAmount";
 import { EmptyState } from "@/components/EmptyState";
-import { getProduct, createOrder, updateOrder } from "@/lib/storage";
 import {
-  loginWithPi,
+  getProduct,
+  createOrder,
+  updateOrder,
+  getPiUser,
+} from "@/lib/storage";
+import {
   createPiPayment,
   completePiPayment,
   errorPiPayment,
 } from "@/lib/pi";
 import type { Product } from "@/lib/types";
 
-type Phase = "idle" | "authenticating" | "creating" | "completing" | "error";
+type Phase = "idle" | "creating" | "completing" | "error";
 
 export default function CheckoutPage() {
   const params = useParams<{ id: string }>();
@@ -30,25 +34,26 @@ export default function CheckoutPage() {
     if (typeof id === "string") setProduct(getProduct(id) ?? null);
   }, [id]);
 
-  // The full mock payment lifecycle, mirroring the real Pi SDK order of
-  // operations: authenticate -> create payment -> complete payment.
+  // Mock payment lifecycle: create payment -> complete payment. Login is NOT
+  // triggered here so the mock checkout keeps working in any browser. If the
+  // buyer logged in with Pi on the home page we use that username, otherwise a
+  // mock buyer stands in.
   async function handlePay() {
     if (!product) return;
     setError(null);
 
     try {
-      setPhase("authenticating");
-      const user = await loginWithPi(); // Pi.authenticate (mock)
-
       setPhase("creating");
       const payment = await createPiPayment(product); // Pi.createPayment (mock)
+
+      const buyer = getPiUser();
 
       // Record the order as pending the moment the payment exists.
       const order = createOrder({
         productId: product.id,
         productName: product.productName,
         amountPi: product.pricePi,
-        buyerUsername: user.username,
+        buyerUsername: buyer?.username ?? "pioneer_demo",
         paymentId: payment.paymentId,
       });
 
@@ -93,12 +98,10 @@ export default function CheckoutPage() {
     );
   }
 
-  const working =
-    phase === "authenticating" || phase === "creating" || phase === "completing";
+  const working = phase === "creating" || phase === "completing";
 
   const phaseLabel: Record<Phase, string> = {
     idle: "Mock Pay with Pi",
-    authenticating: "Connecting to Pi…",
     creating: "Creating payment…",
     completing: "Completing payment…",
     error: "Try again",
