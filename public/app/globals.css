@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    @apply bg-canvas text-ink antialiased;
+    /* Lock the overscroll so the app feels native on iPhone. */
+    overscroll-behavior-y: none;
+  }
+
+  /* Larger, comfortable tap targets on inputs by default. */
+  input,
+  textarea,
+  button,
+  select {
+    font: inherit;
+  }
+}
+
+@layer utilities {
+  /* iPhone safe-area helpers (home indicator, notch). */
+  .pb-safe {
+    padding-bottom: calc(env(safe-area-inset-bottom) + 1rem);
+  }
+  .pt-safe {
+    padding-top: calc(env(safe-area-inset-top) + 0.5rem);
+  }
+  .min-h-dvh {
+    min-height: 100dvh;
+  }
+
+  /* Tabular, balance-style numerals for Pi amounts and ids. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+}
